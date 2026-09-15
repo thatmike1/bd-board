@@ -1,0 +1,16 @@
+{
+  "agentsview": "http://127.0.0.1:8080",
+  "notesDir": "docs/notes",
+  "lanes": [
+    { "label": "product", "note": "customer-facing features", "glyph": "*", "color": "#a06a2c" },
+    { "label": "bugs", "note": "defects and regressions", "glyph": "!", "color": "#8b4a68" },
+    { "label": "infra", "note": "tooling, tests, and maintenance", "glyph": "#", "color": "#47598a" }
+  ],
+  "unlaned": { "title": "no lane", "note": "no work-stream label yet" },
+  "subLabels": ["frontend", "backend"],
+  "waiting": { "labels": ["needs-human"], "title": "waiting on you", "note": "a decision only you can give" },
+  "note": { "addLabel": "human-note", "offerToClear": ["needs-human"] },
+  "thoughts": { "label": "idea", "title": "ideas", "note": "not counted as backlog" },
+  "flags": ["blocked-external"],
+  "capture": { "labels": ["idea"] }
+}

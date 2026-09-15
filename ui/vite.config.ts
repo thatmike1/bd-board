@@ -1,0 +1,17 @@
+import { fileURLToPath } from 'node:url'
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+const here = fileURLToPath(new URL('.', import.meta.url))
+
+// root is ui/, /api goes to the bd-board server (or `npm run mock`) on 1338
+export default defineConfig({
+  root: here,
+  plugins: [react()],
+  server: {
+    port: 5173,
+    strictPort: false,
+    proxy: { '/api': { target: 'http://127.0.0.1:1338', changeOrigin: false } },
+  },
+  build: { outDir: 'dist', emptyOutDir: true },
+})
