@@ -2,6 +2,7 @@
 // board to 127.0.0.1 and opens it.
 import { execFileSync, spawn } from 'node:child_process'
 import { statSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -11,10 +12,13 @@ import { BdError, BeadsClient } from './bd'
 import { loadConfig, type ResolvedBoardConfig } from './config'
 
 const DEFAULT_PORT = 1338
+/** how many ports past the default to try when no --port is given */
+const PORT_TRIES = 20
 
 export interface Options {
   repo: string
-  port: number
+  /** undefined means the first free port from 1338 up */
+  port: number | undefined
   agentsview: string | null | undefined
   config?: string
   open: boolean
@@ -35,8 +39,8 @@ export function parseOptions(argv: string[]): Options {
     allowPositionals: false,
   })
 
-  const port = values.port === undefined ? DEFAULT_PORT : Number(values.port)
-  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  const port = values.port === undefined ? undefined : Number(values.port)
+  if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
     throw new Error('--port must be between 0 and 65535')
   }
 
@@ -83,6 +87,24 @@ export function resolveActor(repoPath: string): string {
   const envUser = process.env['USER']?.trim()
   if (envUser) return envUser
   return 'unknown'
+}
+
+/** true when nothing is listening on 127.0.0.1:<port> */
+export function portFree(port: number): Promise<boolean> {
+  return new Promise((done) => {
+    const probe = createServer()
+    probe.once('error', () => done(false))
+    probe.once('listening', () => probe.close(() => done(true)))
+    probe.listen(port, '127.0.0.1')
+  })
+}
+
+/** the first free port from `start` up, so a second board next to a running one just works */
+export async function firstFreePort(start: number, tries: number): Promise<number | null> {
+  for (let port = start; port < start + tries; port += 1) {
+    if (await portFree(port)) return port
+  }
+  return null
 }
 
 /** opens the url in the platform's default browser */
@@ -155,7 +177,13 @@ async function main(): Promise<void> {
     uiDist,
   })
 
-  const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: options.port }, (info) => {
+  const port = options.port ?? (await firstFreePort(DEFAULT_PORT, PORT_TRIES))
+  if (port === null) {
+    console.error(`bd-board: no free port between ${DEFAULT_PORT} and ${DEFAULT_PORT + PORT_TRIES - 1}; pass --port`)
+    process.exit(1)
+  }
+
+  const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port }, (info) => {
     const url = `http://127.0.0.1:${info.port}/`
     console.log(`bd-board: ${name} (${options.repo})`)
     console.log(`open: ${url}`)

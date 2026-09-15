@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { parseOptions, repoNameFromId, resolveActor } from './main'
+import { createServer } from 'node:net'
+import { firstFreePort, parseOptions, repoNameFromId, resolveActor } from './main'
 
 describe('cli flags', () => {
   it('defaults port and opening the browser, leaving agentsview undefined', () => {
     const options = parseOptions([])
-    expect(options.port).toBe(1338)
+    expect(options.port).toBeUndefined()
     expect(options.agentsview).toBeUndefined()
     expect(options.open).toBe(true)
     expect(options.repo).toBe(process.cwd())
@@ -38,6 +39,21 @@ describe('cli flags', () => {
   it('rejects a port outside the range and an unknown flag', () => {
     expect(() => parseOptions(['--port', '99999'])).toThrow()
     expect(() => parseOptions(['--wat'])).toThrow()
+  })
+})
+
+describe('port pick', () => {
+  it('skips a port that is already taken', async () => {
+    const taken = createServer()
+    await new Promise<void>((done) => taken.listen(0, '127.0.0.1', done))
+    const address = taken.address()
+    const port = typeof address === 'object' && address ? address.port : 0
+    try {
+      expect(await firstFreePort(port, 2)).toBe(port + 1)
+      expect(await firstFreePort(port, 1)).toBeNull()
+    } finally {
+      taken.close()
+    }
   })
 })
 

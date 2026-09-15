@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "concurrently -n server,ui -c blue,magenta \"npm:dev:server\" \"npm:dev:ui\"",
-    "dev:server": "tsx watch server/main.ts --no-open",
+    "dev:server": "tsx watch server/main.ts --port 1338 --no-open",
     "dev:ui": "vite --config ui/vite.config.ts",
     "mock": "tsx scripts/mock-api.mjs",
     "build": "vite build --config ui/vite.config.ts",

@@ -115,4 +115,4 @@ The server never accepts a raw argument list from the client. Every route maps t
 
 `bd-board [--repo <path>] [--port <n>] [--config <path>] [--agentsview <url>|--no-agentsview] [--no-open]`
 
-Defaults: repo = cwd, port = 1338, agentsview = from config or off (`null`), opens the browser. Repo name = the `bd` issue prefix (derived from the first exported id, or the folder name when the export is empty).
+Defaults: repo = cwd, port = the first free port from 1338 up (an explicit `--port` fails if taken), agentsview = from config or off (`null`), opens the browser. Repo name = the `bd` issue prefix (derived from the first exported id, or the folder name when the export is empty).

@@ -36,7 +36,7 @@ ln -s "$PWD/bin/bd-board.mjs" ~/.local/bin/bd-board
 | flag | default | description |
 |---|---|---|
 | `--repo <path>` | current directory | path to the beads repository |
-| `--port <n>` | `1338` | local port to bind |
+| `--port <n>` | first free from `1338` | local port to bind; without it a second board next to a running one takes the next free port |
 | `--config <path>` | `<repo>/.bd-board.json` | explicit path to config file |
 | `--agentsview <url>` | from config or off | AgentsView server url |
 | `--no-agentsview` | | force disable AgentsView join |
