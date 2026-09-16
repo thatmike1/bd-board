@@ -64,3 +64,35 @@ export function laneColor(axis: string | null, config?: BoardConfig): string | u
   }
   return undefined
 }
+
+/** lowercase with diacritics stripped, one utf-16 unit per unit, matching the server's search fold */
+export function fold(text: string): string {
+  let out = ''
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]!
+    const base = ch.normalize('NFD')[0] ?? ch
+    out += base.toLowerCase()[0] ?? ch
+  }
+  return out
+}
+
+/** splits text into plain and matched runs for the search terms */
+export function highlightRuns(text: string, terms: string[]): { text: string; hit: boolean }[] {
+  const folded = fold(text)
+  const marks = new Array<boolean>(text.length).fill(false)
+  for (const term of terms) {
+    if (!term) continue
+    let at = folded.indexOf(term)
+    while (at >= 0) {
+      marks.fill(true, at, at + term.length)
+      at = folded.indexOf(term, at + term.length)
+    }
+  }
+  const runs: { text: string; hit: boolean }[] = []
+  for (let i = 0; i < text.length; i += 1) {
+    const last = runs[runs.length - 1]
+    if (last && last.hit === marks[i]) last.text += text[i]
+    else runs.push({ text: text[i]!, hit: marks[i]! })
+  }
+  return runs
+}

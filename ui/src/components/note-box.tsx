@@ -20,6 +20,7 @@ interface NoteBoxProps {
 export function NoteBox(props: NoteBoxProps) {
   const { issue, short, config, noteRef, value, onChange, clear, onClearChange, onSend, sending } =
     props
+  const author = config.human ? ` --author ${config.human.id}` : ''
   const presentClears = config.note.offerToClear.filter((l) => issue.labels.includes(l))
   const empty = value.trim().length === 0
 
@@ -45,13 +46,13 @@ export function NoteBox(props: NoteBoxProps) {
           <span className="chint">
             {config.note.addLabel ? (
               <>
-                sending runs <span className="mono">bd comment {short}</span> and labels the bead{' '}
+                sending runs <span className="mono">bd comments add {short}{author}</span> and labels the bead{' '}
                 <span className="mono">{config.note.addLabel}</span>, so the next session reads it
                 first.
               </>
             ) : (
               <>
-                sending runs <span className="mono">bd comment {short}</span>.
+                sending runs <span className="mono">bd comments add {short}{author}</span>.
               </>
             )}
           </span>

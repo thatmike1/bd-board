@@ -22,12 +22,49 @@ export interface Issue {
   dependent_count: number
 }
 
+export type AuthorKind = 'human' | 'agent' | 'unknown'
+
+/** the server's reading of a stored author: `human:mike`, `agent:claude`, or an unknown legacy name */
+export interface Author {
+  kind: AuthorKind
+  name: string
+  /** the board's own configured human */
+  self: boolean
+}
+
 export interface Comment {
   id: string
   issue_id: string
+  /** the stored bd author string, canonical */
   author: string
   text: string
   created_at: string
+  by: Author
+}
+
+export type SearchScope = 'all' | 'open' | 'closed'
+export type SearchField = 'id' | 'title' | 'description' | 'notes' | 'comment'
+
+export interface SearchHit {
+  id: string
+  title: string
+  status: Status
+  priority: number
+  labels: string[]
+  updated_at: string
+  field: SearchField
+  excerpt: string
+  comment: { id: string; author: string; by: Author; created_at: string } | null
+  fields: SearchField[]
+  score: number
+}
+
+export interface SearchResult {
+  query: string
+  scope: SearchScope
+  terms: string[]
+  total: number
+  hits: SearchHit[]
 }
 
 export interface SessionHit {
@@ -92,6 +129,8 @@ export interface DerivedConfig {
 }
 
 export interface BoardConfig {
+  /** the configured human, or null when the server derived one from git */
+  human: { id: string; name: string } | null
   agentsview: string | null
   notesDir: string | null
   lanes: LaneConfig[]
@@ -109,7 +148,9 @@ export interface SessionInfo {
   token: string
   repo: { name: string; path: string }
   agentsview: string | null
+  /** the stored author id the board writes comments as */
   me: string
+  human: { id: string; name: string }
   config: BoardConfig
 }
 
@@ -156,19 +197,31 @@ async function ensureToken(): Promise<string> {
   return info.token
 }
 
-/** DELETE with the write token; the server only allows beads the board itself filed */
-async function del<T>(path: string): Promise<T> {
+/** a write with the token; a restarted server hands out a new token, so a 403 refetches it once */
+async function withToken<T>(send: (token: string) => Promise<T>): Promise<T> {
   const t = await ensureToken()
-  return call<T>(path, { method: 'DELETE', headers: { 'x-bd-token': t } })
+  try {
+    return await send(t)
+  } catch (error) {
+    if (!(error instanceof Error) || !/x-bd-token/.test(error.message)) throw error
+    token = null
+    return send(await ensureToken())
+  }
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
-  const t = await ensureToken()
-  return call<T>(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-bd-token': t },
-    body: JSON.stringify(body),
-  })
+/** DELETE with the write token; the server only allows beads the board itself filed */
+function del<T>(path: string): Promise<T> {
+  return withToken((t) => call<T>(path, { method: 'DELETE', headers: { 'x-bd-token': t } }))
+}
+
+function post<T>(path: string, body: unknown): Promise<T> {
+  return withToken((t) =>
+    call<T>(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-bd-token': t },
+      body: JSON.stringify(body),
+    }),
+  )
 }
 
 /** every issue in the repo, all statuses; the ui filters */
@@ -181,7 +234,13 @@ export function getIssue(id: string): Promise<IssueDetail> {
   return call<IssueDetail>(`/api/issues/${encodeURIComponent(id)}`)
 }
 
-/** runs `bd comment` and updates labels via the server's note config */
+/** ranked full-text search over ids, titles, descriptions, notes and comments */
+export function search(query: string, scope: SearchScope, signal?: AbortSignal): Promise<SearchResult> {
+  const params = new URLSearchParams({ q: query, scope })
+  return call<SearchResult>(`/api/search?${params.toString()}`, signal ? { signal } : undefined)
+}
+
+/** runs `bd comments add --author` and updates labels via the server's note config */
 export function postComment(
   id: string,
   text: string,

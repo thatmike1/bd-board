@@ -12,6 +12,7 @@ interface SessionBody {
   repo: { name: string; path: string }
   agentsview: string | null
   me: string
+  human: { id: string; name: string }
   config: ResolvedBoardConfig
 }
 interface ListBody {
@@ -75,10 +76,10 @@ function appFor(configOverrides?: Partial<ResolvedBoardConfig>) {
     return ok('')
   }
   const app = createApp({
-    client: new BeadsClient(repo, runner),
+    client: new BeadsClient(repo, runner, { actor: 'human:tester' }),
     repo: { name: 'repo', path: repo },
     agentsview: null,
-    me: 'tester',
+    human: { id: 'human:tester', name: 'Tester' },
     token: TOKEN,
     config: { ...testConfig, ...configOverrides },
   })
@@ -114,7 +115,8 @@ describe('reads', () => {
     expect(body.token).toBe(TOKEN)
     expect(body.repo).toEqual({ name: 'repo', path: repo })
     expect(body.agentsview).toBeNull()
-    expect(body.me).toBe('tester')
+    expect(body.me).toBe('human:tester')
+    expect(body.human).toEqual({ id: 'human:tester', name: 'Tester' })
     expect(body.config.notesDir).toBe('notes-folder')
     expect(body.config.note.addLabel).toBe('from-human')
     expect(body.config.capture.labels).toEqual(['idea', 'fun-tag'])
@@ -208,6 +210,31 @@ describe('token', () => {
   })
 })
 
+describe('search', () => {
+  it('searches the export, comments included, and labels comment authors', async () => {
+    const { app, calls } = appFor()
+    const body = await json<{ hits: { id: string; field: string; comment: { by: { name: string } } | null }[] }>(
+      await app.request('/api/search?q=bead&scope=open'),
+    )
+    expect(body.hits.map((h) => h.id)).toEqual(['repo-abc'])
+    expect(calls).toEqual([['export']])
+  })
+
+  it('rejects a bad scope and answers an empty query without reading bd', async () => {
+    const { app, calls } = appFor()
+    expect((await app.request('/api/search?q=x&scope=parked')).status).toBe(400)
+    const empty = await json<{ hits: unknown[] }>(await app.request('/api/search?q=%20'))
+    expect(empty.hits).toEqual([])
+    expect(calls).toEqual([])
+  })
+
+  it('labels detail comments with who wrote them', async () => {
+    const { app } = appFor()
+    const body = await json<{ comments: { by: unknown }[] }>(await app.request('/api/issues/repo-abc'))
+    expect(body.comments[0]!.by).toEqual({ kind: 'unknown', name: 'tester', self: false })
+  })
+})
+
 describe('writes', () => {
   it('comments and returns the refreshed detail', async () => {
     const { app, calls } = appFor()
@@ -218,7 +245,7 @@ describe('writes', () => {
     const body = await json<DetailBody>(response)
     expect(body.comments).toHaveLength(1)
     expect(calls.slice(0, 4)).toEqual([
-      ['comment', 'repo-abc', '--', 'do it'],
+      ['comments', 'add', 'repo-abc', '--author=human:tester', '--', 'do it'],
       ['label', 'add', 'repo-abc', '--', 'from-human'],
       ['show', 'repo-abc', '--json'],
       ['label', 'remove', 'repo-abc', '--', 'needs-human'],

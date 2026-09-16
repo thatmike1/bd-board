@@ -78,9 +78,23 @@ const FULL_CONFIG = {
   }
 }
 
+describe('human identity config', () => {
+  it('resolves id and name, defaulting the name from the id', () => {
+    expect(resolveConfig({ human: { id: 'human:mike', name: 'Mike' } }).human).toEqual({ id: 'human:mike', name: 'Mike' })
+    expect(resolveConfig({ human: { id: 'human:mike' } }).human).toEqual({ id: 'human:mike', name: 'mike' })
+  })
+
+  it('rejects ids that would read as an agent, a flag or nothing', () => {
+    expect(() => resolveConfig({ human: { id: 'agent:claude' } })).toThrow(/human.id/)
+    expect(() => resolveConfig({ human: { id: '-x' } })).toThrow(/human.id/)
+    expect(() => resolveConfig({ human: { id: 'two words' } })).toThrow(/human.id/)
+  })
+})
+
 describe('resolveConfig defaults', () => {
   it('returns all defaults when given empty object or null', () => {
     const config = resolveConfig({})
+    expect(config.human).toBeNull()
     expect(config.agentsview).toBeNull()
     expect(config.notesDir).toBeNull()
     expect(config.lanes).toEqual([])

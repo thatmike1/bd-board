@@ -12,7 +12,8 @@ const require = createRequire(join(root, 'package.json'))
 const loader = pathToFileURL(require.resolve('tsx')).href
 const entry = join(root, 'server', 'main.ts')
 
-const child = spawn(process.execPath, ['--import', loader, entry, ...process.argv.slice(2)], {
+// node:sqlite (the T3 title join) prints an ExperimentalWarning that would pollute `search --json` stderr
+const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', '--import', loader, entry, ...process.argv.slice(2)], {
   stdio: 'inherit',
   cwd: process.cwd(),
 })

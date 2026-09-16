@@ -38,6 +38,12 @@ export interface Comment {
   created_at: string
 }
 
+/** one issue with its full comment thread, the unit search reads */
+export interface IssueWithComments {
+  issue: Issue
+  comments: Comment[]
+}
+
 export interface RunResult {
   stdout: string
   stderr: string
@@ -87,14 +93,19 @@ function assertText(text: unknown, what: string): string {
   return trimmed
 }
 
-/** spawns the real `bd` binary in the repo, never through a shell */
-export function nodeRunner(repo: string): Runner {
+/**
+ * spawns the real `bd` binary in the repo, never through a shell. `actor` pins BEADS_ACTOR so
+ * a board started from inside an agent session still writes its audit trail as the human.
+ */
+export function nodeRunner(repo: string, actor?: string): Runner {
+  const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' }
+  if (actor) env['BEADS_ACTOR'] = actor
   return (args) =>
     new Promise((resolve, reject) => {
       execFile(
         'bd',
         args,
-        { cwd: repo, timeout: RUN_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, NO_COLOR: '1' } },
+        { cwd: repo, timeout: RUN_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024, env },
         (error, stdout, stderr) => {
           if (!error) return resolve({ stdout, stderr, code: 0 })
           const failure = error as NodeJS.ErrnoException & { code?: number | string; killed?: boolean }
@@ -117,11 +128,14 @@ function parseJson<T>(raw: string, what: string): T {
 /** the narrow set of beads operations the board is allowed to perform */
 export class BeadsClient {
   readonly repo: string
+  /** stored as the author of every comment this client writes; unset leaves bd's own default */
+  readonly actor: string | undefined
   private readonly runner: Runner
 
-  constructor(repo: string, runner?: Runner) {
+  constructor(repo: string, runner?: Runner, options: { actor?: string } = {}) {
     this.repo = repo
-    this.runner = runner ?? nodeRunner(repo)
+    this.actor = options.actor
+    this.runner = runner ?? nodeRunner(repo, options.actor)
   }
 
   /** runs one allowlisted command and returns stdout, turning a failure into a BdError */
@@ -136,16 +150,22 @@ export class BeadsClient {
 
   /** every issue in the repo, from `bd export` (JSONL) */
   async issues(): Promise<Issue[]> {
+    return (await this.corpus()).map((entry) => entry.issue)
+  }
+
+  /** every issue with its embedded comment thread, from one `bd export` */
+  async corpus(): Promise<IssueWithComments[]> {
     const raw = await this.run(['export'])
-    const issues: Issue[] = []
+    const out: IssueWithComments[] = []
     for (const line of raw.split('\n')) {
       const trimmed = line.trim()
       if (!trimmed) continue
       const record = parseJson<Record<string, unknown>>(trimmed, 'bd export')
       if (record['_type'] !== 'issue') continue
-      issues.push(normalise(record))
+      const comments = Array.isArray(record['comments']) ? (record['comments'] as Comment[]) : []
+      out.push({ issue: normalise(record), comments })
     }
-    return issues
+    return out
   }
 
   /** one issue, from `bd show <id> --json` (which returns an array) */
@@ -174,8 +194,8 @@ export class BeadsClient {
   }
 
   /**
-   * adds a note comment and updates labels: `bd comment`, then optionally `bd label add`,
-   * and removes each specified clearLabel the issue carries.
+   * adds a note comment and updates labels: `bd comments add --author <actor>`, then optionally
+   * `bd label add`, and removes each specified clearLabel the issue carries.
    */
   async comment(
     id: string,
@@ -184,8 +204,10 @@ export class BeadsClient {
   ): Promise<Issue> {
     assertId(id)
     const body = assertText(text, 'comment text')
-    // `--` stops bd's flag parsing, so a note may start with a dash
-    await this.run(['comment', id, '--', body])
+    // `--` stops bd's flag parsing, so a note may start with a dash; an explicit author wins
+    // over whatever BEADS_ACTOR the process inherited
+    const author = this.actor ? [`--author=${this.actor}`] : []
+    await this.run(['comments', 'add', id, ...author, '--', body])
     if (options.addLabel) {
       await this.run(['label', 'add', id, '--', options.addLabel])
     }

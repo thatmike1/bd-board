@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BoardConfig, Issue } from './api'
-import { buildBoard, projectOf, sectionsHolding, step, subsOf } from './model'
+import type { Comment } from './api'
+import { buildBoard, projectOf, sectionsHolding, step, subsOf, unreadNote } from './model'
 import type { BoardOptions } from './model'
 
 const FULL_CONFIG = {
@@ -87,11 +88,12 @@ function resolved(raw: typeof FULL_CONFIG): BoardConfig {
     ]),
   ]
   const hotChips = [...new Set([raw.note.addLabel, ...raw.note.offerToClear])]
-  return { ...raw, derived: { allFlags, hotChips } }
+  return { ...raw, human: null, derived: { allFlags, hotChips } }
 }
 
 function emptyConfig(): BoardConfig {
   return {
+    human: null,
     agentsview: null,
     notesDir: null,
     lanes: [],
@@ -317,5 +319,26 @@ describe('default folds', () => {
     })
     expect(board.sections[0]?.key).toBe('lane:none')
     expect(board.sections[0]?.folded).toBe(false)
+  })
+})
+
+describe('unreadNote', () => {
+  const comment = (id: string, kind: 'human' | 'agent' | 'unknown', self = false): Comment => ({
+    id,
+    issue_id: 'x',
+    author: id,
+    text: id,
+    created_at: '2026-09-16T00:00:00Z',
+    by: { kind, name: id, self },
+  })
+
+  it('is the newest note from the board human, skipping a later agent reply', () => {
+    const notes = [comment('old', 'human', true), comment('mine', 'human', true), comment('reply', 'agent')]
+    expect(unreadNote(notes)?.id).toBe('mine')
+  })
+
+  it('falls back to the newest unknown-author comment, never to an agent', () => {
+    expect(unreadNote([comment('legacy', 'unknown'), comment('reply', 'agent')])?.id).toBe('legacy')
+    expect(unreadNote([comment('reply', 'agent')])).toBeUndefined()
   })
 })

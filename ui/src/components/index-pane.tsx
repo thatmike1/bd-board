@@ -1,11 +1,12 @@
 // the left index: counts, quick capture, sections of one-line rows, keyboard hint
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { CSSProperties, RefObject } from 'react'
-import type { BoardConfig, Issue } from '../api'
+import type { BoardConfig, Issue, SearchHit, SearchResult, SearchScope } from '../api'
 import type { Board, BoardRow } from '../model'
 import { axisOf, shortId, subsOf } from '../model'
 import { axisStyle, formatTime, laneColor, laneGlyph } from '../format'
+import { SearchResults } from './search-results'
 
 interface RowProps {
   row: BoardRow
@@ -90,7 +91,33 @@ interface IndexPaneProps {
   onCaptureChange: (value: string) => void
   onCaptureSubmit: () => void
   fetchedAt: string | undefined
+  search: SearchProps
 }
+
+export interface SearchProps {
+  ref: RefObject<HTMLInputElement | null>
+  value: string
+  onChange: (value: string) => void
+  scope: SearchScope
+  onScope: (scope: SearchScope) => void
+  /** the query the result belongs to */
+  query: string
+  result: SearchResult | undefined
+  loading: boolean
+  error: string | null
+  onPick: (hit: SearchHit) => void
+  /** arrow keys in the box step through hits */
+  onMove: (delta: 1 | -1) => void
+  /** enter opens the current hit and hands the keyboard to the list */
+  onSubmit: () => void
+  onClear: () => void
+}
+
+const SCOPES: { scope: SearchScope; label: string }[] = [
+  { scope: 'all', label: 'all' },
+  { scope: 'open', label: 'open' },
+  { scope: 'closed', label: 'closed' },
+]
 
 /** left pane: the whole ledger as one dense scrollable index */
 export function IndexPane(props: IndexPaneProps) {
@@ -106,8 +133,24 @@ export function IndexPane(props: IndexPaneProps) {
     onCaptureChange,
     onCaptureSubmit,
     fetchedAt,
+    search,
   } = props
   const listRef = useRef<HTMLDivElement>(null)
+  const searching = search.value.trim().length > 0
+  const boardScroll = useRef(0)
+  const wasSearching = useRef(false)
+
+  // entering a search remembers where the board was scrolled; clearing puts it back
+  useLayoutEffect(() => {
+    const list = listRef.current
+    if (!list || searching === wasSearching.current) return
+    if (searching) {
+      list.scrollTop = 0
+    } else {
+      list.scrollTop = boardScroll.current
+    }
+    wasSearching.current = searching
+  }, [searching])
 
   // keep the selected row on screen as the selection moves; a refetch or a fold elsewhere
   // must not drag the list back to it
@@ -154,7 +197,47 @@ export function IndexPane(props: IndexPaneProps) {
         </div>
       </div>
 
-      <div className="capture">
+      <div className="search">
+        <input
+          ref={search.ref}
+          value={search.value}
+          type="search"
+          aria-label="search beads"
+          placeholder="search titles, descriptions, notes, comments"
+          onChange={(e) => {
+            if (!searching && e.target.value.trim() && listRef.current) boardScroll.current = listRef.current.scrollTop
+            search.onChange(e.target.value)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault()
+              search.onMove(e.key === 'ArrowDown' ? 1 : -1)
+            } else if (e.key === 'Enter') {
+              e.preventDefault()
+              search.onSubmit()
+            } else if (e.key === 'Escape') {
+              e.preventDefault()
+              if (search.value) search.onClear()
+              else e.currentTarget.blur()
+            }
+          }}
+        />
+        <span className="scopes" role="radiogroup" aria-label="search scope">
+          {SCOPES.map(({ scope, label }) => (
+            <button
+              key={scope}
+              role="radio"
+              aria-checked={search.scope === scope}
+              className={search.scope === scope ? 'on' : ''}
+              onClick={() => search.onScope(scope)}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
+      </div>
+
+      <div className="capture" hidden={searching}>
         <input
           ref={captureRef}
           value={captureValue}
@@ -174,7 +257,19 @@ export function IndexPane(props: IndexPaneProps) {
       </div>
 
       <div className="ilist" ref={listRef}>
-        {board.sections.map((section) => {
+        {searching ? (
+          <SearchResults
+            query={search.query}
+            scope={search.scope}
+            result={search.result}
+            loading={search.loading}
+            error={search.error}
+            repoName={repoName}
+            selected={selected}
+            onPick={search.onPick}
+          />
+        ) : null}
+        {searching ? null : board.sections.map((section) => {
           const color = laneColor(section.axis, config)
           return (
             <div className={section.folded ? 'sec folded' : 'sec'} key={section.key}>
@@ -266,6 +361,9 @@ export function IndexPane(props: IndexPaneProps) {
         <span>
           <kbd>h</kbd>
           <kbd>l</kbd> fold
+        </span>
+        <span>
+          <kbd>s</kbd> search
         </span>
         <span>
           <kbd>/</kbd> capture

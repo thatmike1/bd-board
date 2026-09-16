@@ -1,6 +1,6 @@
 // derives the board shape (waiting strip, lanes, thoughts, deferred, closed, counts) from the flat issue list
 
-import type { BoardConfig, Issue, LaneConfig } from './api'
+import type { BoardConfig, Comment, Issue, LaneConfig } from './api'
 
 export interface BoardRow {
   issue: Issue
@@ -413,4 +413,13 @@ export function step(board: Board, from: string | null, delta: 1 | -1): string |
     if (id !== undefined && onScreen.has(id)) return id
   }
   return (delta === 1 ? order[order.length - 1] : order[0]) ?? null
+}
+
+/**
+ * the note an unread flag points at: the newest comment the board's human wrote. comments from
+ * before authors were recorded fall back to the newest unknown one; an agent reply never counts.
+ */
+export function unreadNote(comments: Comment[]): Comment | undefined {
+  const newest = (match: (c: Comment) => boolean) => [...comments].reverse().find(match)
+  return newest((c) => c.by.self) ?? newest((c) => c.by.kind === 'unknown')
 }

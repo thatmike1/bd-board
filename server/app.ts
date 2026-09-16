@@ -6,15 +6,18 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { ContentfulStatusCode } from 'hono/utils/http-status'
-import { BdError, type BeadsClient, type Issue, type Status } from './bd'
+import { classifyAuthor, defaultHuman, type HumanIdentity } from './authors'
+import { BdError, type BeadsClient, type Issue, type IssueWithComments, type Status } from './bd'
 import { resolveConfig, type ResolvedBoardConfig } from './config'
 import { notesFor, sessionsFor } from './joins'
+import { DEFAULT_LIMIT, SCOPES, searchIssues, type SearchScope } from './search'
 
 export interface AppConfig {
   client: BeadsClient
   repo: { name: string; path: string }
   agentsview: string | null
-  me?: string
+  /** who the board writes comments as; defaults to `human:$USER` */
+  human?: HumanIdentity
   /** per-launch token; generated when omitted */
   token?: string
   config?: ResolvedBoardConfig
@@ -70,18 +73,34 @@ function stringArray(value: unknown, what: string): string[] {
   return value as string[]
 }
 
+/** how long a search may reuse the last `bd export` before reading the ledger again */
+const CORPUS_MAX_AGE_MS = 5_000
+const MAX_SEARCH_LIMIT = 500
+
 /** builds the Hono app; `serve` in main.ts binds it to 127.0.0.1 */
 export function createApp(config: AppConfig) {
   const { client, repo, agentsview } = config
   const token = config.token ?? newToken()
   const boardConfig = config.config ?? resolveConfig({})
-  const me = config.me ?? process.env['BEADS_ACTOR'] ?? process.env['USER'] ?? 'unknown'
+  const human = config.human ?? defaultHuman(process.env['USER'] ?? 'unknown')
   const uiDist = config.uiDist ?? null
+
+  // one export serves the list and search; any write from this board drops it
+  let corpusCache: { at: number; corpus: IssueWithComments[] } | null = null
+  const loadCorpus = async (maxAgeMs: number): Promise<IssueWithComments[]> => {
+    if (corpusCache && Date.now() - corpusCache.at <= maxAgeMs) return corpusCache.corpus
+    const corpus = await client.corpus()
+    corpusCache = { at: Date.now(), corpus }
+    return corpus
+  }
 
   // bd writes go through one dolt working set; keep them one at a time
   let writeChain: Promise<unknown> = Promise.resolve()
   const serialise = <T>(work: () => Promise<T>): Promise<T> => {
-    const next = writeChain.then(work, work)
+    corpusCache = null
+    const next = writeChain.then(work, work).finally(() => {
+      corpusCache = null
+    })
     writeChain = next.catch(() => undefined)
     return next
   }
@@ -104,11 +123,29 @@ export function createApp(config: AppConfig) {
     return next()
   })
 
-  app.get('/api/session', (c) => c.json({ token, repo, agentsview, me, config: boardConfig }))
+  app.get('/api/session', (c) =>
+    // config.human is filled with the identity in use, so the ui never has to guess the default
+    c.json({ token, repo, agentsview, me: human.id, human, config: { ...boardConfig, human } }),
+  )
 
   app.get('/api/issues', async (c) => {
-    const issues = await client.issues()
+    const issues = (await loadCorpus(0)).map((entry) => entry.issue)
     return c.json({ issues, fetchedAt: new Date().toISOString() })
+  })
+
+  // same ranking as `bd-board search`; reads comments from the export, not per issue
+  app.get('/api/search', async (c) => {
+    const query = c.req.query('q') ?? ''
+    const scope = (c.req.query('scope') ?? 'all') as SearchScope
+    if (!SCOPES.includes(scope)) throw new BdError('scope must be all, open or closed')
+    const rawLimit = c.req.query('limit')
+    const limit = rawLimit === undefined ? DEFAULT_LIMIT : Number(rawLimit)
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_SEARCH_LIMIT) {
+      throw new BdError(`limit must be an integer between 1 and ${MAX_SEARCH_LIMIT}`)
+    }
+    if (!query.trim()) return c.json(searchIssues([], query, { scope, limit, human }))
+    const corpus = await loadCorpus(CORPUS_MAX_AGE_MS)
+    return c.json(searchIssues(corpus, query, { scope, limit, human }))
   })
 
   // ids only, so a page that is allowed to read it cross-origin learns nothing else
@@ -205,7 +242,7 @@ export function createApp(config: AppConfig) {
     ])
     return {
       issue,
-      comments,
+      comments: comments.map((comment) => ({ ...comment, by: classifyAuthor(comment.author, human) })),
       sessions,
       notes,
     }

@@ -34,7 +34,39 @@ interface Issue {            // one record of `bd export` (JSONL, `_type === 'is
   dependent_count: number
 }
 
-interface Comment { id: string; issue_id: string; author: string; text: string; created_at: string }
+interface Author {           // the server's reading of a stored author string
+  kind: 'human' | 'agent' | 'unknown'
+  name: string               // Mike, Claude, Codex, Gemini, Agent, or the raw string when unknown
+  self: boolean              // true only for the board's configured human; the ui shows "You"
+}
+
+interface Comment {
+  id: string
+  issue_id: string
+  author: string             // canonical, as bd stores it: human:mike, agent:claude, agent:codex, agent:gemini
+  text: string               // markdown
+  created_at: string
+  by: Author
+}
+
+type SearchScope = 'all' | 'open' | 'closed'   // open = everything not closed, deferred and parked ideas included
+type SearchField = 'id' | 'title' | 'description' | 'notes' | 'comment'
+
+interface SearchHit {
+  id: string
+  title: string
+  status: Status
+  priority: number
+  labels: string[]
+  updated_at: string
+  field: SearchField         // where the strongest match is
+  excerpt: string            // text around the match; the description lead for id and title hits
+  comment: { id: string; author: string; by: Author; created_at: string } | null   // set for comment hits
+  fields: SearchField[]      // every field any term was found in
+  score: number
+}
+
+interface SearchResult { query: string; scope: SearchScope; terms: string[]; total: number; hits: SearchHit[] }
 
 interface SessionHit {       // from AgentsView /api/v1/search?q=<id>&limit=<n>
   session_id: string
@@ -64,6 +96,7 @@ interface CaptureConfig { labels: string[] }
 interface DerivedConfig { allFlags: string[]; hotChips: string[] }
 
 interface BoardConfig {
+  human: { id: string; name: string } | null   // in /api/session always the identity in use
   agentsview: string | null
   notesDir: string | null
   lanes: LaneConfig[]
@@ -81,7 +114,8 @@ interface SessionInfo {
   token: string
   repo: { name: string; path: string }
   agentsview: string | null
-  me: string
+  me: string                 // the author id board comments are written as
+  human: { id: string; name: string }
   config: BoardConfig
 }
 ```
@@ -94,6 +128,7 @@ interface SessionInfo {
 | GET | `/api/issues` | | `{ issues: Issue[], fetchedAt: string }` all statuses, the UI filters |
 | GET | `/api/issue-ids` | | `{ ids: string[] }` all statuses; readable cross-origin from the T3 Code renderer and loopback pages, which link short ids in chat |
 | GET | `/api/issues/:id` | | `IssueDetail` |
+| GET | `/api/search?q=<words>&scope=all\|open\|closed&limit=<1-500>` | | `SearchResult`, the same ranking `bd-board search` prints |
 | POST | `/api/issues/:id/comment` | `{ text: string, clear?: boolean }` | `IssueDetail` |
 | POST | `/api/issues/:id/status` | `{ status: Status, reason?: string, until?: string }` | `{ issue }` |
 | POST | `/api/issues/:id/priority` | `{ priority: number }` | `{ issue }` |
@@ -103,13 +138,41 @@ interface SessionInfo {
 
 ## Server behaviour per write
 
-- comment: `bd comment <id> <text>`; if `config.note.addLabel` is configured, runs `bd label add <id> <addLabel>`; if `clear` is true, removes any `config.note.offerToClear` labels the issue carries.
+- comment: `bd comments add <id> --author=<human id> -- <text>`, with `BEADS_ACTOR` pinned to the same id so an inherited agent actor never leaks in; if `config.note.addLabel` is configured, runs `bd label add <id> <addLabel>`; if `clear` is true, removes any `config.note.offerToClear` labels the issue carries.
 - status: `closed` runs `bd close <id> --reason <reason|"closed from bd-board">`; `deferred` runs `bd defer <id> [--until <until>]`; `open` from `closed` runs `bd reopen <id>`; `open` from `deferred` runs `bd undefer <id>`; anything else runs `bd update <id> --status <status>`.
 - priority: `bd update <id> --priority <n>`.
 - labels: one `bd update <id> --add-label a --remove-label b` call. Labels: 1 to 128 chars, no whitespace.
 - create: `bd q <title> -l <label>...`; defaults to `config.capture.labels` when none given.
 
 The server never accepts a raw argument list from the client. Every route maps to a fixed argument shape; ids are validated against `^[A-Za-z0-9_-]+(\.[0-9]+)?$` before use. Every `bd` call runs with `cwd` set to the repo path and `--no-color` where supported; output is parsed, never echoed to the client on success.
+
+## Comment authors
+
+bd stores whatever author a comment is written with. The board writes as its configured human (`"human": { "id": "human:mike", "name": "Mike" }` in `.bd-board.json`; without it, `human:<git user.name>`). Agents write as `agent:<provider>` by running bd with `BEADS_ACTOR` set, which bd uses as the default comment author. Reading an author:
+
+- the configured human id: human, `self`, shown as You
+- `agent:<provider>`, or a bare `Claude` / `Codex` / `Gemini`: agent, named after the provider; plain `agent` is Agent
+- `human:<name>`: another human
+- anything else, including the shared git username older comments carry: unknown. It is never guessed to be the human.
+
+When the note label is on a bead, the pinned note is the newest comment from the board's human, falling back to the newest unknown-author comment; an agent reply is never shown as the note.
+
+## Search
+
+One implementation, `server/search.ts`, serves both the http route and the cli. It reads the whole ledger from one `bd export` (comments included), so closed, deferred and parked beads are searchable and a new comment shows up on the next read (the route reuses an export for at most 5 seconds; board writes drop it).
+
+- terms are split on whitespace, `"quoted words"` stay one term; matching ignores case and diacritics
+- a bead matches when every term appears somewhere in it
+- ranking: exact id (full or short) first, then the whole query in the title, all terms in the title, an id containing the term, the phrase or all terms in one body field, and last terms spread across fields; ties go to the most recently updated bead
+- a comment hit points at the newest matching comment
+
+For agents, no server or browser needed:
+
+```bash
+bd-board search <words> [--scope all|open|closed] [--limit <n>] [--json] [--repo <path>] [--config <path>]
+```
+
+`--json` prints a `SearchResult`. Without it, one block per hit: id, status, priority and title, then where it matched and the excerpt. Exit code 0 with or without matches, 2 for bad arguments, 1 when bd fails.
 
 ## Config and launch
 

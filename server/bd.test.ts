@@ -29,11 +29,11 @@ function fake(handler: (args: string[]) => string | RunResult = () => '') {
 }
 
 /** a client whose `show` always answers with one record, with the given status */
-function clientFor(status = 'open', overrides: Record<string, unknown> = {}) {
+function clientFor(status = 'open', overrides: Record<string, unknown> = {}, actor?: string) {
   const { runner, calls } = fake((args) =>
     args[0] === 'show' ? JSON.stringify([issueRecord({ status, ...overrides })]) : '',
   )
-  return { client: new BeadsClient('/repo', runner), calls }
+  return { client: new BeadsClient('/repo', runner, actor ? { actor } : {}), calls }
 }
 
 describe('validation', () => {
@@ -139,20 +139,20 @@ describe('comment', () => {
     const { client, calls } = clientFor()
     await client.comment('repo-abc', '-leading dash note', { addLabel: 'from-human' })
     expect(calls).toEqual([
-      ['comment', 'repo-abc', '--', '-leading dash note'],
+      ['comments', 'add', 'repo-abc', '--', '-leading dash note'],
       ['label', 'add', 'repo-abc', '--', 'from-human'],
       ['show', 'repo-abc', '--json'],
     ])
   })
 
   it('also removes clearLabels that the issue carries', async () => {
-    const { client, calls } = clientFor('open', { labels: ['needs-human', 'other'] })
+    const { client, calls } = clientFor('open', { labels: ['needs-human', 'other'] }, 'human:mike')
     const issue: Issue = await client.comment('repo-abc', 'verdict', {
       addLabel: 'from-human',
       clearLabels: ['needs-human', 'non-existent'],
     })
     expect(calls).toEqual([
-      ['comment', 'repo-abc', '--', 'verdict'],
+      ['comments', 'add', 'repo-abc', '--author=human:mike', '--', 'verdict'],
       ['label', 'add', 'repo-abc', '--', 'from-human'],
       ['show', 'repo-abc', '--json'],
       ['label', 'remove', 'repo-abc', '--', 'needs-human'],

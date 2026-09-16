@@ -4,7 +4,9 @@ import { createServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { classifyAuthor } from '../server/authors.ts'
 import { resolveConfig } from '../server/config.ts'
+import { searchIssues } from '../server/search.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const issues = JSON.parse(readFileSync(join(here, 'demo/beads.json'), 'utf8'))
@@ -24,19 +26,22 @@ const comments = {
     {
       id: 'c-note-1',
       issue_id: 'demo-note-1',
-      author: 'alice',
+      author: 'agent:claude',
       text: 'Stripe retries on 500 errors but we need to guard against concurrent handling.',
       created_at: '2026-09-10T10:00:00Z',
     },
     {
       id: 'c-note-2',
       issue_id: 'demo-note-1',
-      author: 'human',
+      author: 'human:demo',
       text: 'Verified Redis SETNX idempotency pattern works well here.',
       created_at: '2026-09-12T16:00:00Z',
     },
   ],
 }
+
+const human = { id: 'human:demo', name: 'Demo' }
+const withBy = (list) => (list ?? []).map((c) => ({ ...c, by: classifyAuthor(c.author, human) }))
 
 const createdHere = new Set()
 const port = Number(process.argv[2] ?? 1338)
@@ -65,13 +70,20 @@ createServer(async (req, res) => {
       token,
       repo: { name: 'demo', path: '/demo' },
       agentsview: config.agentsview,
-      me: 'human',
-      config,
+      me: human.id,
+      human,
+      config: { ...config, human },
     })
   }
 
   if (req.method === 'GET' && url.pathname === '/api/issues') {
     return json(res, 200, { issues, fetchedAt: new Date().toISOString() })
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/search') {
+    const corpus = issues.map((issue) => ({ issue, comments: comments[issue.id] ?? [] }))
+    const scope = url.searchParams.get('scope') ?? 'all'
+    return json(res, 200, searchIssues(corpus, url.searchParams.get('q') ?? '', { scope, human }))
   }
 
   if (req.method === 'GET' && url.pathname === '/api/issue-ids') {
@@ -83,7 +95,7 @@ createServer(async (req, res) => {
     if (!issue) return json(res, 404, { error: 'not found' })
     return json(res, 200, {
       issue,
-      comments: comments[m[1]] ?? [],
+      comments: withBy(comments[m[1]]),
       sessions: null,
       notes: [],
     })
@@ -136,7 +148,7 @@ createServer(async (req, res) => {
       const comment = {
         id: String(Date.now()),
         issue_id: issue.id,
-        author: 'human',
+        author: human.id,
         text: b.text,
         created_at: new Date().toISOString(),
       }
@@ -148,7 +160,7 @@ createServer(async (req, res) => {
       }
       return json(res, 200, {
         issue,
-        comments: comments[issue.id],
+        comments: withBy(comments[issue.id]),
         sessions: null,
         notes: [],
       })

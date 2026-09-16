@@ -1,6 +1,6 @@
 # bd-board
 
-Local web board over a [beads](https://github.com/gastownhall/beads) backlog. Index on the left with sections and lanes, and the selected bead always open on the right with its comments, sessions, and linked notes. Sending a note from the composer appends a comment and can flag the bead so your coding agent reads it first on its next run.
+Local web board over a [beads](https://github.com/gastownhall/beads) backlog. Index on the left with sections and lanes, and the selected bead always open on the right with its Markdown-rendered description, notes, comments, sessions, and linked notes. Sending a note from the composer appends a comment under your own author id and can flag the bead so your coding agent reads it first on its next run. Search covers ids, titles, descriptions, notes and comments, on the board and from a terminal.
 
 ![bd-board](docs/screenshot.png)
 
@@ -30,6 +30,15 @@ Install the launcher once to run it from anywhere:
 ```bash
 ln -s "$PWD/bin/bd-board.mjs" ~/.local/bin/bd-board
 ```
+
+### search from a terminal or an agent
+
+```bash
+bd-board search "cooler swap"                 # all beads, closed and parked included
+bd-board search webhook --scope open --json   # structured hits for an agent
+```
+
+Same ranking as the board's search box; see `docs/api.md` for the result shape.
 
 ### flags
 
@@ -82,10 +91,15 @@ Any other label that is not a lane label, sub-label, or workflow flag automatica
 
 ### example configuration
 
+### comment authors
+
+`human` sets the author id the board writes your comments as, and the name shown for it. Give agents their own ids through `BEADS_ACTOR`, which bd stores as the comment author: `agent:claude`, `agent:codex`, `agent:gemini`, or plain `agent`. Set it wherever each harness takes environment variables (Claude Code: `env` in `settings.json`; Codex: `[shell_environment_policy] set` in `config.toml`). Comments whose author is neither the human id nor an agent id show as author unknown, which is where comments written before this lands under a shared git username end up.
+
 Here is an example `.bd-board.json`:
 
 ```json
 {
+  "human": { "id": "human:alice", "name": "Alice" },
   "lanes": [
     { "label": "product", "note": "customer-facing features", "glyph": "*", "color": "#a06a2c" },
     { "label": "bugs", "note": "defects and regressions", "glyph": "!", "color": "#8b4a68" },
@@ -125,7 +139,9 @@ Every open bead carries exactly one lane label: `product`, `bugs`, or `infra`.
 
 Flags:
 - `needs-human`: add when the next step requires human decision or verification. Remove once decided.
-- `human-note`: an unread note from the human written via bd-board. Read the latest comment first, act on it or reply, and remove the label.
+- `human-note`: an unread note from the human written via bd-board. Read the human's latest comment (author `human:alice`) first, act on it or reply, and remove the label.
+
+To find a bead from words you remember, run `bd-board search <words>` (add `--json` for structured hits); it searches titles, descriptions, notes and comments of every bead, closed ones included.
 - `idea`: raw captured thought, not active backlog. Do not work on unless asked.
 ```
 
@@ -160,7 +176,7 @@ npm run typecheck        # tsc type checks across server and ui
 
 ## layout
 
-- `server/`: Node + Hono backend. `bd.ts` is the only place `bd` is executed; input arguments and IDs are validated before dispatch.
+- `server/`: Node + Hono backend. `bd.ts` is the only place `bd` is executed; input arguments and IDs are validated before dispatch. `search.ts` is the search shared by the route and the cli, `authors.ts` reads comment authors.
 - `ui/`: Vite + React frontend. `model.ts` derives render sections, groupings, and counts from the resolved board config and issue list.
 - `docs/api.md`: HTTP contract between frontend and backend.
 
@@ -173,4 +189,5 @@ npm run typecheck        # tsc type checks across server and ui
 - `n`: defer selected bead
 - `m`: close selected bead
 - `h` / `l`: fold / unfold section
+- `s`: focus search; in the box `Up` / `Down` step through hits, `Enter` opens the hit and returns the keys to the list, `Esc` clears and puts the board back where it was
 - `/`: focus quick capture

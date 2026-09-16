@@ -1,6 +1,7 @@
 // types, defaults, validation and loader for .bd-board.json
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import type { HumanIdentity } from './authors'
 import { assertLabel, BdError } from './bd'
 
 export interface LaneConfig {
@@ -74,7 +75,13 @@ export interface ResolvedDerivedConfig {
   hotChips: string[]
 }
 
+export interface HumanConfig {
+  id: string
+  name?: string | null
+}
+
 export interface BoardConfig {
+  human?: HumanConfig | null
   agentsview?: string | null
   notesDir?: string | null
   lanes?: LaneConfig[]
@@ -88,6 +95,8 @@ export interface BoardConfig {
 }
 
 export interface ResolvedBoardConfig {
+  /** null means main.ts falls back to `human:<git user.name>` */
+  human: HumanIdentity | null
   agentsview: string | null
   notesDir: string | null
   lanes: ResolvedLaneConfig[]
@@ -161,6 +170,21 @@ export function resolveConfig(raw: unknown): ResolvedBoardConfig {
     throw new ConfigError('config must be an object', 'config')
   }
   const obj = raw as Record<string, unknown>
+
+  let human: HumanIdentity | null = null
+  if (obj['human'] !== undefined && obj['human'] !== null) {
+    if (typeof obj['human'] !== 'object' || Array.isArray(obj['human'])) {
+      throw new ConfigError('human must be an object', 'human')
+    }
+    const h = obj['human'] as Record<string, unknown>
+    const id = validateString(h['id'], 'human.id').trim()
+    // stored as the bd comment author: an agent-looking or flag-looking id would misread
+    if (!id || id.length > 128 || /\s/.test(id) || id.startsWith('-') || /^agent(:|$)/i.test(id)) {
+      throw new ConfigError('human.id must be 1-128 characters, no whitespace, not starting with - or agent', 'human.id')
+    }
+    const name = validateOptionalString(h['name'], 'human.name')?.trim() || id.replace(/^human:/i, '')
+    human = { id, name }
+  }
 
   const agentsview = validateOptionalString(obj['agentsview'], 'agentsview')
   const notesDir = validateOptionalString(obj['notesDir'], 'notesDir')
@@ -293,6 +317,7 @@ export function resolveConfig(raw: unknown): ResolvedBoardConfig {
   }
 
   return {
+    human,
     agentsview,
     notesDir,
     lanes,

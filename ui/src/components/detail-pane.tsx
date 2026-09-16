@@ -1,19 +1,32 @@
 // the right pane: one bead, always open, with the note box pinned at its foot
 
+import { useEffect, useRef } from 'react'
 import type { CSSProperties, RefObject } from 'react'
-import type { BoardConfig, Issue, IssueDetail, Status } from '../api'
-import { axisOf, flagsOf, projectOf, shortId } from '../model'
+import type { BoardConfig, Comment, Issue, IssueDetail, SearchField, Status } from '../api'
+import { axisOf, flagsOf, projectOf, shortId, unreadNote } from '../model'
 import { axisStyle, formatDate, formatShortDate, statusLabel } from '../format'
+import { MarkdownText } from './markdown'
 import { WriteRow } from './write-row'
 import { NoteBox } from './note-box'
+
+/** where a search hit points inside the open bead */
+export interface RevealTarget {
+  id: string
+  field: SearchField
+  commentId: string | null
+  /** bumps on every pick, so choosing the same hit again scrolls again */
+  seq: number
+}
 
 interface DetailPaneProps {
   issue: Issue | undefined
   detail: IssueDetail | undefined
   repoName: string
   config: BoardConfig
-  me: string
+  /** display name of the board's human, for the You tooltip */
+  human: string
   knownLabels: string[]
+  reveal: RevealTarget | null
   noteRef: RefObject<HTMLTextAreaElement | null>
   note: string
   onNoteChange: (value: string) => void
@@ -27,13 +40,68 @@ interface DetailPaneProps {
   onCopyId: (id: string) => void
 }
 
-function paragraphs(text: string): string[] {
-  return text.split(/\n{2,}/).filter((p) => p.trim().length > 0)
+/** the comment header label: You for the board's human, the agent or human name, or a legacy marker */
+function CommentHead({ comment, human }: { comment: Comment; human: string }) {
+  const { by } = comment
+  if (by.kind === 'unknown') {
+    return (
+      <>
+        <b className="who unknown" title={`stored author "${comment.author}" does not say whether a person or an agent wrote it`}>
+          {comment.author}
+        </b>
+        <span className="whotag">author unknown</span>
+      </>
+    )
+  }
+  const label = by.self ? 'You' : by.name
+  const title = by.self ? `${human} (${comment.author})` : comment.author
+  return (
+    <>
+      <b className={`who ${by.kind}`} title={title}>
+        {label}
+      </b>
+      {by.kind === 'agent' ? <span className="whotag">agent</span> : null}
+    </>
+  )
+}
+
+function CommentRow({ comment, human, flash }: { comment: Comment; human: string; flash: boolean }) {
+  const cls = ['comment', comment.by.self ? 'mine' : '', comment.by.kind, flash ? 'flash' : '']
+  return (
+    <div className={cls.filter(Boolean).join(' ')} id={`comment-${comment.id}`}>
+      <div className="chead">
+        <CommentHead comment={comment} human={human} />
+        <span>{formatDate(comment.created_at)}</span>
+      </div>
+      <MarkdownText text={comment.text} className="ctext" />
+    </div>
+  )
 }
 
 /** detail of the selected bead; the list record paints the header before the join lands */
 export function DetailPane(props: DetailPaneProps) {
-  const { issue, detail, repoName, config, me, knownLabels } = props
+  const { issue, detail, repoName, config, human, knownLabels, reveal } = props
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const revealed = reveal && issue && reveal.id === issue.id ? reveal : null
+  const detailReady = detail?.issue.id === issue?.id
+
+  // a search hit scrolls its field or comment into view once the detail has landed
+  useEffect(() => {
+    if (!revealed || !detailReady || !bodyRef.current) return
+    const selector =
+      revealed.field === 'comment' && revealed.commentId
+        ? `#comment-${CSS.escape(revealed.commentId)}`
+        : revealed.field === 'description' || revealed.field === 'notes'
+          ? `[data-field="${revealed.field}"]`
+          : null
+    if (!selector) {
+      bodyRef.current.scrollTop = 0
+      return
+    }
+    const el = bodyRef.current.querySelector(selector)
+    el?.scrollIntoView({ block: 'center' })
+  }, [revealed, detailReady])
+
   if (!issue) {
     return (
       <main className="read">
@@ -47,12 +115,13 @@ export function DetailPane(props: DetailPaneProps) {
   const axis = axisOf(full, config.lanes)
   const project = projectOf(full, config)
   const flags = flagsOf(full, config.derived.allFlags)
-  const comments = detail?.comments ?? []
-  const lastComment = comments.length ? comments[comments.length - 1] : undefined
+  // detail from a previous selection must not paint under this bead's header
+  const comments = detailReady ? (detail?.comments ?? []) : []
   const unread =
-    config.note.addLabel && full.labels.includes(config.note.addLabel) ? lastComment : undefined
+    config.note.addLabel && full.labels.includes(config.note.addLabel) ? unreadNote(comments) : undefined
   // the unread note is shown on its own above, so it does not repeat in the list
-  const earlier = unread ? comments.slice(0, -1) : comments
+  const earlier = unread ? comments.filter((c) => c !== unread) : comments
+  const flashComment = revealed?.field === 'comment' ? revealed.commentId : null
 
   return (
     <main className="read" style={axisStyle(axis, config) as CSSProperties}>
@@ -85,7 +154,7 @@ export function DetailPane(props: DetailPaneProps) {
         />
       </div>
 
-      <div className="rbody" key={full.id}>
+      <div className="rbody" key={full.id} ref={bodyRef}>
         <div className="rwrap">
           <h1>{full.title}</h1>
           <div className="meta">
@@ -130,21 +199,20 @@ export function DetailPane(props: DetailPaneProps) {
 
           {unread ? (
             <>
-              <h2 className="sub">your note, still unread</h2>
-              <div className={unread.author === me ? 'comment mine' : 'comment'}>
-                <div className="chead">
-                  <b>{unread.author}</b>
-                  <span>{formatDate(unread.created_at)}</span>
-                </div>
-                <p>{unread.text}</p>
-              </div>
+              <h2 className="sub">
+                {unread.by.self ? 'your note, still unread' : 'unread note, written before authors were recorded'}
+              </h2>
+              <CommentRow comment={unread} human={human} flash={flashComment === unread.id} />
             </>
           ) : null}
 
           <h2 className="sub">description</h2>
-          <div className="prose">
+          <div
+            className={revealed?.field === 'description' ? 'prose flash' : 'prose'}
+            data-field="description"
+          >
             {full.description ? (
-              paragraphs(full.description).map((p, i) => <p key={i}>{p}</p>)
+              <MarkdownText text={full.description} />
             ) : (
               <p className="empty">no description on this bead.</p>
             )}
@@ -153,27 +221,21 @@ export function DetailPane(props: DetailPaneProps) {
           {issue.notes ? (
             <>
               <h2 className="sub">notes</h2>
-              <div className="notes">
-                {paragraphs(issue.notes).map((p, i) => (
-                  <p key={i}>{p}</p>
-                ))}
+              <div className={revealed?.field === 'notes' ? 'notes flash' : 'notes'} data-field="notes">
+                <MarkdownText text={issue.notes} />
               </div>
             </>
           ) : null}
 
-          <h2 className="sub">{unread ? 'earlier comments' : 'comments'}</h2>
+          <h2 className="sub">{unread ? 'other comments' : 'comments'}</h2>
           {earlier.length ? (
             earlier.map((c) => (
-              <div className={c.author === me ? 'comment mine' : 'comment'} key={c.id}>
-                <div className="chead">
-                  <b>{c.author}</b>
-                  <span>{formatDate(c.created_at)}</span>
-                </div>
-                <p>{c.text}</p>
-              </div>
+              <CommentRow comment={c} human={human} flash={flashComment === c.id} key={c.id} />
             ))
+          ) : detailReady || full.comment_count === 0 ? (
+            <div className="empty">{unread ? 'nothing else.' : 'no comments yet.'}</div>
           ) : (
-            <div className="empty">{unread ? 'nothing before it.' : 'no comments yet.'}</div>
+            <div className="empty">reading comments…</div>
           )}
 
           {detail && detail.sessions !== null ? (

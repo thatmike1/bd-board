@@ -8,8 +8,10 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { serve } from '@hono/node-server'
 import { createApp, newToken } from './app'
+import { defaultHuman, type HumanIdentity } from './authors'
 import { BdError, BeadsClient } from './bd'
 import { loadConfig, type ResolvedBoardConfig } from './config'
+import { DEFAULT_LIMIT, SCOPES, searchIssues, type SearchResult, type SearchScope } from './search'
 
 const DEFAULT_PORT = 1338
 /** how many ports past the default to try when no --port is given */
@@ -70,10 +72,11 @@ export function repoNameFromId(id: string): string | null {
   return cut > 0 ? withoutSuffix.slice(0, cut) : null
 }
 
-/** resolves current user identity: $BEADS_ACTOR, git user.name, or $USER */
-export function resolveActor(repoPath: string): string {
-  const envActor = process.env['BEADS_ACTOR']?.trim()
-  if (envActor) return envActor
+/**
+ * the local user's name: git user.name, then $USER. BEADS_ACTOR is deliberately ignored,
+ * because agent sessions set it and a board started from one must still write as the human.
+ */
+export function resolveUserName(repoPath: string): string {
   try {
     const gitUser = execFileSync('git', ['config', 'user.name'], {
       cwd: repoPath,
@@ -87,6 +90,81 @@ export function resolveActor(repoPath: string): string {
   const envUser = process.env['USER']?.trim()
   if (envUser) return envUser
   return 'unknown'
+}
+
+/** the configured human, or `human:<git user.name>` when the config names none */
+export function resolveHuman(config: ResolvedBoardConfig, repoPath: string): HumanIdentity {
+  return config.human ?? defaultHuman(resolveUserName(repoPath))
+}
+
+export interface SearchOptions {
+  repo: string
+  config?: string
+  query: string
+  scope: SearchScope
+  limit: number
+  json: boolean
+}
+
+/** parses `bd-board search <query…> [--scope all|open|closed] [--limit <n>] [--json] [--repo <path>] [--config <path>]` */
+export function parseSearchOptions(argv: string[]): SearchOptions {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: {
+      repo: { type: 'string' },
+      config: { type: 'string' },
+      scope: { type: 'string' },
+      limit: { type: 'string' },
+      json: { type: 'boolean' },
+    },
+    allowPositionals: true,
+  })
+  const query = positionals.join(' ').trim()
+  if (!query) throw new Error('search needs a query: bd-board search <words> [--scope all|open|closed] [--json]')
+  const scope = (values.scope ?? 'all') as SearchScope
+  if (!SCOPES.includes(scope)) throw new Error('--scope must be all, open or closed')
+  const limit = values.limit === undefined ? DEFAULT_LIMIT : Number(values.limit)
+  if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit must be a positive integer')
+  return { repo: resolve(values.repo ?? process.cwd()), config: values.config, query, scope, limit, json: values.json === true }
+}
+
+/** plain-text rendering of search hits for a terminal or an agent that skips --json */
+export function formatSearch(result: SearchResult): string {
+  if (!result.hits.length) return `no issues match "${result.query}" (scope ${result.scope})`
+  const lines = [`${result.total} match${result.total === 1 ? '' : 'es'} for "${result.query}" (scope ${result.scope})`]
+  for (const hit of result.hits) {
+    lines.push('', `${hit.id}  [${hit.status} p${hit.priority}]  ${hit.title}`)
+    let where: string = hit.field
+    if (hit.comment) {
+      const by = hit.comment.by.kind === 'unknown' ? `${hit.comment.author} (author unknown)` : hit.comment.by.name
+      where = `comment ${hit.comment.id} by ${by}, ${hit.comment.created_at.slice(0, 10)}`
+    }
+    lines.push(`  ${where}: ${hit.excerpt || '(no description)'}`)
+  }
+  if (result.total > result.hits.length) lines.push('', `${result.total - result.hits.length} more; raise --limit`)
+  return lines.join('\n')
+}
+
+async function runSearch(argv: string[]): Promise<void> {
+  let options: SearchOptions
+  try {
+    options = parseSearchOptions(argv)
+  } catch (error) {
+    console.error(`bd-board: ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(2)
+  }
+  try {
+    const config = loadConfig(options.repo, options.config)
+    const human = resolveHuman(config, options.repo)
+    const corpus = await new BeadsClient(options.repo).corpus()
+    const result = searchIssues(corpus, options.query, { scope: options.scope, limit: options.limit, human })
+    console.log(options.json ? JSON.stringify(result, null, 2) : formatSearch(result))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (options.json) console.log(JSON.stringify({ error: message }))
+    console.error(`bd-board: search failed: ${message}`)
+    process.exit(1)
+  }
 }
 
 /** true when nothing is listening on 127.0.0.1:<port> */
@@ -127,6 +205,7 @@ export function openBrowser(url: string): void {
 }
 
 async function main(): Promise<void> {
+  if (process.argv[2] === 'search') return runSearch(process.argv.slice(3))
   let options: Options
   try {
     options = parseOptions(process.argv.slice(2))
@@ -152,9 +231,9 @@ async function main(): Promise<void> {
 
   const agentsview =
     options.agentsview !== undefined ? options.agentsview : config.agentsview
-  const me = resolveActor(options.repo)
+  const human = resolveHuman(config, options.repo)
 
-  const client = new BeadsClient(options.repo)
+  const client = new BeadsClient(options.repo, undefined, { actor: human.id })
   let name = basename(options.repo)
   try {
     const issues = await client.issues()
@@ -171,7 +250,7 @@ async function main(): Promise<void> {
     client,
     repo: { name, path: options.repo },
     agentsview,
-    me,
+    human,
     config,
     token: newToken(),
     uiDist,
@@ -185,7 +264,7 @@ async function main(): Promise<void> {
 
   const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port }, (info) => {
     const url = `http://127.0.0.1:${info.port}/`
-    console.log(`bd-board: ${name} (${options.repo})`)
+    console.log(`bd-board: ${name} (${options.repo}), writing as ${human.id}`)
     console.log(`open: ${url}`)
     if (agentsview) console.log(`agentsview: ${agentsview}`)
     console.log('press Ctrl-C to stop')

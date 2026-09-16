@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createServer } from 'node:net'
-import { firstFreePort, parseOptions, repoNameFromId, resolveActor } from './main'
+import { resolveConfig } from './config'
+import { firstFreePort, formatSearch, parseOptions, parseSearchOptions, repoNameFromId, resolveHuman } from './main'
 
 describe('cli flags', () => {
   it('defaults port and opening the browser, leaving agentsview undefined', () => {
@@ -66,15 +67,46 @@ describe('repo name', () => {
   })
 })
 
-describe('actor resolution', () => {
-  it('returns $BEADS_ACTOR when set', () => {
+describe('human identity', () => {
+  it('ignores an inherited agent BEADS_ACTOR', () => {
     const prev = process.env['BEADS_ACTOR']
     try {
-      process.env['BEADS_ACTOR'] = 'alice'
-      expect(resolveActor(process.cwd())).toBe('alice')
+      process.env['BEADS_ACTOR'] = 'agent:claude'
+      const human = resolveHuman(resolveConfig({}), process.cwd())
+      expect(human.id.startsWith('human:')).toBe(true)
+      expect(human.id).not.toContain('agent')
     } finally {
       if (prev === undefined) delete process.env['BEADS_ACTOR']
       else process.env['BEADS_ACTOR'] = prev
     }
+  })
+
+  it('prefers the configured human', () => {
+    const config = resolveConfig({ human: { id: 'human:mike', name: 'Mike' } })
+    expect(resolveHuman(config, process.cwd())).toEqual({ id: 'human:mike', name: 'Mike' })
+  })
+})
+
+describe('search cli', () => {
+  it('joins positionals into the query and reads the flags', () => {
+    expect(parseSearchOptions(['comment', 'author', '--scope', 'closed', '--json', '--limit', '5', '--repo', '/tmp'])).toEqual({
+      repo: '/tmp',
+      config: undefined,
+      query: 'comment author',
+      scope: 'closed',
+      limit: 5,
+      json: true,
+    })
+  })
+
+  it('rejects an empty query and an unknown scope', () => {
+    expect(() => parseSearchOptions([])).toThrow(/needs a query/)
+    expect(() => parseSearchOptions(['x', '--scope', 'parked'])).toThrow(/scope/)
+  })
+
+  it('prints a no-match line', () => {
+    expect(formatSearch({ query: 'zzz', scope: 'all', terms: ['zzz'], total: 0, hits: [] })).toBe(
+      'no issues match "zzz" (scope all)',
+    )
   })
 })
