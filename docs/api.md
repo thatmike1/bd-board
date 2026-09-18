@@ -179,3 +179,5 @@ bd-board search <words> [--scope all|open|closed] [--limit <n>] [--json] [--repo
 `bd-board [--repo <path>] [--port <n>] [--config <path>] [--agentsview <url>|--no-agentsview] [--no-open]`
 
 Defaults: repo = cwd, port = the first free port from 1338 up (an explicit `--port` fails if taken), agentsview = from config or off (`null`), opens the browser. Repo name = the `bd` issue prefix (derived from the first exported id, or the folder name when the export is empty).
+
+`bd-board start [same flags]` runs the board detached and returns once it listens; if one already runs for the repo it prints that url instead. `bd-board stop [--repo <path>]` sends SIGTERM to the board for the repo, whether it was started with `start` or in the foreground. `bd-board status [--repo <path>]` prints the url, exit 1 when none runs. A running board writes `{ pid, port, url, repo }` to `$XDG_RUNTIME_DIR/bd-board/<sha1(repo)[:12]>.json` (tmpdir when unset) and removes it on exit; a detached board logs to the matching `.log`.

@@ -11,6 +11,7 @@ import { createApp, newToken } from './app'
 import { defaultHuman, type HumanIdentity } from './authors'
 import { BdError, BeadsClient } from './bd'
 import { loadConfig, type ResolvedBoardConfig } from './config'
+import { clearState, readState, startDetached, stopBoard, writeState } from './daemon'
 import { DEFAULT_LIMIT, SCOPES, searchIssues, type SearchResult, type SearchScope } from './search'
 
 const DEFAULT_PORT = 1338
@@ -204,8 +205,84 @@ export function openBrowser(url: string): void {
   child.unref()
 }
 
+/** parses the `--repo <path>` that `bd-board stop` and `bd-board status` take */
+export function parseRepoOnly(argv: string[]): string {
+  const { values } = parseArgs({ args: argv, options: { repo: { type: 'string' } }, allowPositionals: false })
+  return resolve(values.repo ?? process.cwd())
+}
+
+function failUsage(error: unknown): never {
+  console.error(`bd-board: ${error instanceof Error ? error.message : String(error)}`)
+  process.exit(2)
+}
+
+/** `bd-board start [server flags]`: runs the board in the background, or reports the one already running */
+async function runStart(argv: string[]): Promise<void> {
+  let options: Options
+  try {
+    options = parseOptions(argv)
+  } catch (error) {
+    failUsage(error)
+  }
+  const running = readState(options.repo)
+  if (running) {
+    console.log(`bd-board: already running for ${running.repo} at ${running.url} (pid ${running.pid})`)
+    if (options.open) openBrowser(running.url)
+    return
+  }
+  try {
+    const state = await startDetached(options.repo, argv)
+    console.log(`bd-board: started for ${state.repo} at ${state.url} (pid ${state.pid})`)
+    console.log('stop it with: bd-board stop')
+  } catch (error) {
+    console.error(`bd-board: ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(1)
+  }
+}
+
+/** `bd-board stop`: ends the board running for this repo, background or foreground */
+async function runStop(argv: string[]): Promise<void> {
+  let repo: string
+  try {
+    repo = parseRepoOnly(argv)
+  } catch (error) {
+    failUsage(error)
+  }
+  const state = readState(repo)
+  if (!state) {
+    console.log(`bd-board: no board running for ${repo}`)
+    return
+  }
+  if (await stopBoard(state)) {
+    console.log(`bd-board: stopped ${state.url} (pid ${state.pid})`)
+  } else {
+    console.error(`bd-board: pid ${state.pid} did not exit after SIGTERM`)
+    process.exit(1)
+  }
+}
+
+/** `bd-board status`: prints the running board's url, exits 1 when none runs */
+function runStatus(argv: string[]): void {
+  let repo: string
+  try {
+    repo = parseRepoOnly(argv)
+  } catch (error) {
+    failUsage(error)
+  }
+  const state = readState(repo)
+  if (!state) {
+    console.log(`bd-board: no board running for ${repo}`)
+    process.exit(1)
+  }
+  console.log(`bd-board: running for ${state.repo} at ${state.url} (pid ${state.pid})`)
+}
+
 async function main(): Promise<void> {
-  if (process.argv[2] === 'search') return runSearch(process.argv.slice(3))
+  const command = process.argv[2]
+  if (command === 'search') return runSearch(process.argv.slice(3))
+  if (command === 'start') return runStart(process.argv.slice(3))
+  if (command === 'stop') return runStop(process.argv.slice(3))
+  if (command === 'status') return runStatus(process.argv.slice(3))
   let options: Options
   try {
     options = parseOptions(process.argv.slice(2))
@@ -267,17 +344,20 @@ async function main(): Promise<void> {
     console.log(`bd-board: ${name} (${options.repo}), writing as ${human.id}`)
     console.log(`open: ${url}`)
     if (agentsview) console.log(`agentsview: ${agentsview}`)
-    console.log('press Ctrl-C to stop')
+    console.log('press Ctrl-C or run `bd-board stop` to stop')
+    writeState({ pid: process.pid, port: info.port, url, repo: options.repo })
     if (options.open) {
       openBrowser(url)
     }
   })
 
   const stop = () => {
+    clearState(options.repo, process.pid)
     server.close(() => process.exit(0))
   }
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
+  process.on('SIGHUP', stop)
 }
 
 // only run when executed, so tests can import the helpers

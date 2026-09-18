@@ -25,6 +25,14 @@ Run in any beads repo:
 bd-board                 # in a beads repo; or: bd-board --repo /path/to/repo
 ```
 
+Or keep it off your terminal:
+
+```bash
+bd-board start           # runs in the background, takes the same flags
+bd-board status          # url of the board for this repo
+bd-board stop            # ends it, from the same repo
+```
+
 Install the launcher once to run it from anywhere:
 
 ```bash
