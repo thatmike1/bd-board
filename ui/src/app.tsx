@@ -10,6 +10,7 @@ import { DetailPane, type RevealTarget } from './components/detail-pane'
 import { Toast } from './components/toast'
 import { useToast } from './use-toast'
 import { useFolds } from './use-folds'
+import { writeSelectionHash } from './navigation'
 
 const EMPTY_CONFIG: BoardConfig = {
   agentsview: null,
@@ -116,15 +117,12 @@ export function App() {
   }, [issues, config])
 
   const select = useCallback(
-    (id: string) => {
+    (id: string, userInitiated = true) => {
       if (!id) return
       setSelected(id)
-      const short = repoName ? shortId(id, repoName) : id
-      if (decodeURIComponent(window.location.hash.slice(1)) !== short) {
-        window.history.replaceState(null, '', `#${short}`)
-      }
+      writeSelectionHash(id, selected, repoName, userInitiated)
     },
-    [repoName],
+    [selected, repoName],
   )
 
   // a bead reached through the hash may sit only inside folded sections: open the first of them
@@ -147,7 +145,7 @@ export function App() {
     const next = match?.id ?? board.order[0] ?? issues[0]?.id ?? null
     if (next) {
       if (match) reveal(match.id)
-      select(next)
+      select(next, false)
     }
   }, [selected, issues, board.order, repoName, select, reveal])
 
@@ -318,7 +316,7 @@ export function App() {
         qc.setQueryData<IssueList>(['issues'], (prev) =>
           prev ? { ...prev, issues: [...prev.issues, issue] } : prev,
         )
-        select(issue.id)
+        select(issue.id, false)
         const labelText =
           config.capture.labels.length > 0
             ? ` as ${config.capture.labels.join(' + ')}`
@@ -442,7 +440,7 @@ export function App() {
         if (searching) return
         const below = step(board, selected, 1)
         const next = below && below !== selected ? below : step(board, selected, -1)
-        if (next && next !== selected) select(next)
+        if (next && next !== selected) select(next, false)
       } else if (e.key === 'Enter') {
         e.preventDefault()
         noteRef.current?.focus()
